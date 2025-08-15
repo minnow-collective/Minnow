@@ -9,69 +9,7 @@ library(gert)
 
 options(scipen = 999)
 
-# Function to convert ALL CAPS to title case while preserving proper casing
-title_case <- function(x) {
-  minor_words <- c("and", "or", "the", "of", "in", "on", "at", "by", "for", "to", "el", "la", "de", "du")
-  sapply(x, function(val) {
-    if (is.na(val)) return(NA_character_)
-    val <- stringr::str_to_title(val)
-    for (word in minor_words) {
-      val <- gsub(paste0(" ", stringr::str_to_title(word), "\\b"),
-                  paste0(" ", word), val)}
-    val
-  }, USE.NAMES = FALSE)
-}
-
-
-# Function to dynamically read shapefiles from multiple region directories
-read_level_shapefiles <- function(base_dir, pattern, file_pattern) {
-  # List all region directories based on the base directory and pattern provided
-  region_dirs <- list.files(base_dir, 
-                            pattern = pattern, 
-                            full.names = TRUE, 
-                            ignore.case = TRUE)
-  
-  # Function to read a shapefile from a region directory and track the region
-  read_shapefile <- function(region_dir, file_pattern) {
-    # Extract the region name from the folder name (e.g., "af", "na", "eu")
-    region_name <- basename(region_dir)  # Get the last part of the path, assuming it's the region
-    
-    # Find the path of the shapefile based on the file pattern provided
-    shapefile <- list.files(region_dir, pattern = file_pattern, full.names = TRUE)
-    
-    if (length(shapefile) == 1) {
-      # Read the shapefile, select columns, make valid, and transform CRS
-      st_read(shapefile) %>%
-        select(HYBAS_ID, NEXT_SINK, MAIN_BAS, SUB_AREA, PFAF_ID, geometry) %>%
-        st_make_valid() %>%
-        st_transform(crs = 4326) %>%
-        mutate(Region = region_name)  # Add a new column with the region name
-    } else {
-      message("No shapefile found matching the pattern in directory: ", region_dir)
-      return(NULL)  # Return NULL if no shapefile is found
-    }
-  }
-  
-  # Read all shapefiles for each region and combine them, tracking regions
-  basins_sa_combined <- map(region_dirs, ~ read_shapefile(.x, file_pattern)) %>%
-    compact() %>%  # Remove NULL values if any regions didn't have a matching shapefile
-    bind_rows()    # Combine all the shapefiles into one object
-  
-  return(basins_sa_combined)  # Return the combined data frame
-}
-
-
-# Function to perform intersection by region group
-intersect_by_group <- function(group_name, dataset1, dataset2) {
-  # Subset each input dataset by Region
-  sub1 <- dplyr::filter(dataset1, Region == group_name)
-  sub2 <- dplyr::filter(dataset2, Region == group_name)
-  
-  # Perform intersection and post-process
-  sf::st_intersection(sub1, sub2) %>%
-    sf::st_make_valid() %>%
-    dplyr::filter(sf::st_area(.) >= units::set_units(1000000, "m^2"))
-}
+source("ref_scripts/watersheds_functions.R")
 
 
 # Call the function to process the shapefiles and combine them
