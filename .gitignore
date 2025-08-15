@@ -4,5 +4,5 @@
 .httr-oauth
 .DS_Store
 .quarto
-Watersheds/
-intactness/
+watersheds_data/
+intactness_data/

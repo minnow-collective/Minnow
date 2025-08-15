@@ -23,3 +23,15 @@ github_push <- function(commit_msg = NULL) {
   
   message("Done! Changes pushed to GitHub.")
 }
+
+title_case <- function(x) {
+  minor_words <- c("and", "or", "the", "of", "in", "on", "at", "by", "for", "to", "el", "la", "de", "du")
+  sapply(x, function(val) {
+    if (is.na(val)) return(NA_character_)
+    val <- stringr::str_to_title(val)
+    for (word in minor_words) {
+      val <- gsub(paste0(" ", stringr::str_to_title(word), "\\b"),
+                  paste0(" ", word), val)}
+    val
+  }, USE.NAMES = FALSE)
+}

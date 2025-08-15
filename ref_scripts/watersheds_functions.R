@@ -1,19 +1,9 @@
 # Function to convert ALL CAPS to title case while preserving proper casing
-title_case <- function(x) {
-  minor_words <- c("and", "or", "the", "of", "in", "on", "at", "by", "for", "to", "el", "la", "de", "du")
-  sapply(x, function(val) {
-    if (is.na(val)) return(NA_character_)
-    val <- stringr::str_to_title(val)
-    for (word in minor_words) {
-      val <- gsub(paste0(" ", stringr::str_to_title(word), "\\b"),
-                  paste0(" ", word), val)}
-    val
-  }, USE.NAMES = FALSE)
-}
+
 
 
 # Function to dynamically read shapefiles from multiple region directories
-read_level_shapefiles <- function(base_dir, pattern, file_pattern) {
+hybas_read_multi <- function(base_dir, pattern, file_pattern) {
   # List all region directories based on the base directory and pattern provided
   region_dirs <- list.files(base_dir, 
                             pattern = pattern, 

@@ -1,0 +1,202 @@
+---
+title: "Global Watershed Database Compilation Notebook"
+output: html_notebook
+---
+
+# ---- SETUP ----
+
+Load packages, run reference scripts, and define settings:
+```{r}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(sf)
+library(rnaturalearth)
+library(terra)
+library(mapview)
+library(gert)
+
+source("ref_scripts/watersheds_functions.R")
+source("ref_scripts/general_functions.R")
+
+options(scipen = 999) # Avoid scientific notation in number formatting
+```
+
+
+# ---- FIRST BASIN LAYER ----
+
+This is the broadest, least granular basin layer. 
+We use the the Basins and Sub-Basins dataset from the World Meteorological Organization's (WMO) Global Runoff Data Center (GRDC). 
+The WMO layer is partly derived from the HydroBASINS ("hybas") layer from HydroSHEDS, but it is simpler and contains proper names for all basins and sub-basins.
+We merge WMO polygons into basin-level geometries for this layer, composite this with the HydroBASINS level 1 layer, and keep features from both to be thorough. 
+
+Read in and initially clean raw data:
+```{r}
+# Read all regional hybas level 1 layers and merge into global layer
+hybas_glob_comb_l1 <- hybas_read_multi("watersheds_data/HydroBASINS", "hybas_lake_.*_lev01-12_v1c$", "lev01_v1c.shp$")
+
+# Read in WMO layer, clean up useful variables, and validate geometries
+wmo_basins <- st_read("watersheds_data/wmobb_json/wmobb_basins.json") %>%
+  mutate(across(all_of(c("WMOBB_NAME", "WMOBB_BASIN", "WMOBB_SUBBASIN")), ~ title_case(na_if(str_remove(., " \\(.*$"), "---"))), # Convert from all caps to title case
+         WMOBB_DESCRIPTION = paste0(toupper(substr(WMOBB_DESCRIPTION, 1, 1)), substr(WMOBB_DESCRIPTION, 2, nchar(WMOBB_DESCRIPTION)))) %>% # Only capitalize first letter
+  st_make_valid() %>%
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180")) # Properly split geometries across 0/180 degree dateline if needed
+```
+
+Create merged basin-level WMO layer additionally split and indexed by hybas-derived regions and basin divisions, if applicable:
+```{r}
+# Intersect WMO layer with hybas level 1 layer to assign common Region variable between both layers 
+wmo_ovl1 <- st_intersection(wmo_basins, select(hybas_glob_comb_l1, Region)) %>% 
+  st_make_valid()
+
+# Extract any WMO features that do not intersect with hybas and assign Region as "Other"
+wmo_int_matrix <- st_intersects(wmo_basins, hybas_glob_comb_l1, sparse = FALSE)
+wmo_unm1 <- wmo_basins[rowSums(wmo_int_matrix) == 0, ] %>%
+  mutate(Region = "Other")
+
+# Combine all WMO intersecting and non-intersecting features into unified layer and merge geometry grouped by unique basins and regions
+wmo_comb_l1 <- bind_rows(wmo_ovl1, wmo_unm1) %>%
+  filter(!st_is_empty(geometry), st_geometry_type(geometry) %in% c("POLYGON", "MULTIPOLYGON")) %>%
+  mutate(geometry = st_cast(geometry, "MULTIPOLYGON")) %>%
+  group_by(WMOBB_BASIN, REGNAME, Region) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_make_valid()
+```
+
+Modify basin-level hybas layer (level 1) to be additionally split and indexed by WMO-derived regions and basin divisions, if applicable:
+```{r}
+# Intersect hybas_glob_comb_l1 with wmo_ovl1 to assign subdivisions
+hybas_ovl_wmo1 <- st_intersection(select(wmo_ovl1, WMOBB_BASIN, REGNAME), hybas_glob_comb_l1)
+
+# Find basin features that do NOT intersect any WMO feature
+hybas_unm_wmo1 <- hybas_glob_comb_l1 %>%
+  st_make_valid() %>%
+  filter(!lengths(st_intersects(., wmo_basins)) > 0)  # fix: ensure logical vector
+
+# Combine basin intersecting and non-intersecting parts
+hybas_comb_wmo1 <- bind_rows(hybas_ovl_wmo1, hybas_unm_wmo1) %>%
+  filter(!st_is_empty(geometry), st_geometry_type(geometry) %in% c("POLYGON", "MULTIPOLYGON")) %>%
+  mutate(geometry = st_cast(geometry, "MULTIPOLYGON")) %>%
+  group_by(Region, WMOBB_BASIN, REGNAME) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_make_valid()
+
+# Combine the two layers and drop duplicates based on identifier combo
+basins_comb_l1 <- bind_rows(wmo_comb_l1, hybas_comb_wmo1) %>%
+  distinct(Region, WMOBB_BASIN, REGNAME, .keep_all = TRUE) %>%
+  filter(st_area(.) >= units::set_units(1000000, "m^2"))
+```
+
+
+# ---- SECOND BASIN LAYER ----
+
+Composite WMO sub-basin-level layer with hybas level 1 layer
+```{r}
+# WMO Level 2 version — keep finest granularity
+wmo_comb_l2 <- bind_rows(wmo_ovl1, wmo_unm1) %>%
+  filter(!st_is_empty(geometry), st_geometry_type(geometry) %in% c("POLYGON", "MULTIPOLYGON")) %>%
+  mutate(geometry = st_cast(geometry, "MULTIPOLYGON")) %>%
+  select(WMOBB:REGNAME, WMO306_MoC_REFERENCE, Region) %>%
+  st_make_valid()
+
+hybas_unm_wmo2 <- hybas_unm_wmo1 %>%
+  mutate(
+    WMOBB = NA_integer_,
+    WMOBB_NAME = NA_character_,
+    WMOBB_BASIN = NA_character_,
+    WMOBB_SUBBASIN = NA_character_,
+    WMOBB_DESCRIPTION = NA_character_,
+    REGNAME = NA_character_,
+    WMO306_MoC_REFERENCE = NA_character_
+  ) %>%
+  select(WMOBB:REGNAME, WMO306_MoC_REFERENCE, Region, geometry)
+
+basins_comb_l2 <- bind_rows(wmo_comb_l2, hybas_unm_wmo2) %>%
+  filter(st_area(.) >= units::set_units(1000000, "m^2"))
+```
+
+
+# ---- THIRD BASIN LAYER ----
+
+Composite second basin layer with global hybas level 5 layer:
+```{r}
+hybas_glob_comb_l5 <- hybas_read_multi("/Volumes/OWC Elite Pro Dual/Data + Other/Minnow/watersheds_data/HydroBASINS", "hybas_lake_.*_lev01-12_v1c$", "lev05_v1c.shp$")
+
+# Get shared Region values
+region_groups <- intersect(
+  unique(hybas_glob_comb_l5$Region),
+  unique(basins_comb_l2$Region)
+)
+
+# Apply st_intersection region by region
+hybas_l5_wmo_comp <- purrr::map_dfr(region_groups, function(rg) {
+  
+  hybas_sub <- hybas_glob_comb_l5 %>%
+    filter(Region == rg) %>%
+    select(HYBAS_ID)
+  
+  basins_sub <- basins_comb_l2 %>%
+    filter(Region == rg) %>%
+    select(WMOBB:Region)
+  
+  st_intersection(hybas_sub, basins_sub)
+}) %>%
+  filter(st_area(.) >= units::set_units(1000000, "m^2"))
+```
+
+
+# ---- FOURTH BASIN LAYER ----
+
+Read and merge global hybas level 6 data into one layer:
+```{r}
+hybas_glob_comb_l6 <- hybas_read_multi("/Volumes/OWC Elite Pro Dual/Data + Other/Minnow/watersheds_data/HydroBASINS", "hybas_lake_.*_lev01-12_v1c$", "lev06_v1c.shp$")
+```
+
+
+# ---- EXPORT ALL BASIN LAYERS ----
+
+```{r}
+basins_comb_l1_file <- "watersheds_data/global_basins_wmo_hybas1_composite_layer_1.gpkg"
+if (file.exists(basins_comb_l1_file)) file.remove(basins_comb_l1_file)
+st_write(basins_comb_l1, basins_comb_l1_file)
+
+basins_comb_l2_file <- "watersheds_data/global_basins_wmo_hybas1_composite_layer_2.gpkg"
+if (file.exists(basins_comb_l2_file)) file.remove(basins_comb_l2_file)
+st_write(basins_comb_l2, basins_comb_l2_file)
+
+hybas_l5_wmo_comp_file <- "watersheds_data/global_basins_wmo_hybas5_composite_layer_3.gpkg"
+if (file.exists(hybas_l5_wmo_comp_file)) file.remove(hybas_l5_wmo_comp_file)
+st_write(hybas_l5_wmo_comp, hybas_l5_wmo_comp_file)
+
+hybas_glob_comb_l6_file <- "watersheds_data/global_basins_hybas6_layer_4.gpkg"
+if (file.exists(hybas_glob_comb_l6_file)) file.remove(hybas_glob_comb_l6_file)
+st_write(hybas_glob_comb_l6, hybas_glob_comb_l6_file)
+```
+
+
+# ---- READ, SIMPLIFY, AND INDEX RIVER LAYERS ----
+
+```{r}
+rivers_glob <- st_read("watersheds_data/HydroRIVERS/HydroRIVERS_v10_shp/HydroRIVERS_v10_shp/HydroRIVERS_v10.shp")
+
+rivers_low <- filter(rivers_glob, ORD_FLOW <= 3 | ORD_STRA >= 6) %>%
+  group_by(ORD_FLOW) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_cast("MULTILINESTRING") %>%
+  st_make_valid() %>%
+  st_intersection(basins_comb_l1)
+
+rivers_mod <- filter(rivers_glob, ORD_FLOW <= 4 | ORD_STRA >= 5) %>%
+  group_by(ORD_FLOW) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_cast("MULTILINESTRING") %>%
+  st_intersection(basins_comb_l2)
+
+rivers_all <- rivers_glob %>%
+  group_by(ORD_FLOW) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_cast("MULTILINESTRING") %>%
+  st_intersection(hybas_l5_wmo_comp)# %>%
+#  st_intersection(select(hybas_glob_comb_l6, HYBAS_ID, geometry))
+```
+

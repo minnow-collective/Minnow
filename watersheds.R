@@ -10,6 +10,7 @@ library(gert)
 options(scipen = 999)
 
 source("ref_scripts/watersheds_functions.R")
+source("ref_scripts/general_functions.R")
 
 
 # Call the function to process the shapefiles and combine them
